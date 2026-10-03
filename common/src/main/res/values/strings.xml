@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
     <string name="built_in_car_hotspot">Built-in car hotspot</string>
     <string name="wifi_direct">Wi-Fi Direct</string>
     <string name="hotspot_hint_manual">Built-in car hotspot · Keep the car hotspot, Bluetooth and your iPhone’s Wi-Fi on.</string>
@@ -307,6 +307,7 @@
     <string name="s_1_open_car_hotspot_settings_turn_the_hotspot_on_and_sele">1. Open car hotspot settings, turn the hotspot on and select 5 GHz if available.\n2. Copy its name and password below exactly.\n3. Leave the car hotspot on when connecting. DiPlay sends the details over Bluetooth; your iPhone joins automatically.</string>
     <string name="s_2_4_ghz">2.4 GHz</string>
     <string name="s_2_pair_your_iphone">2 · Pair your iPhone</string>
+    <string name="s_200_ms_lowest_latency">200 ms · lowest latency</string>
     <string name="s_300_ms_default">300 ms · default</string>
     <string name="s_30_fps_lighter_load">30 fps · lighter load</string>
     <string name="s_3_connect">3 · Connect</string>
@@ -368,6 +369,8 @@
     <string name="use_a_usb_data_cable_and_the_car_s_usb_data_port_unlock_yo">Use a USB data cable and the car’s USB data port. Unlock your iPhone and allow CarPlay. No hotspot setup is needed.</string>
     <string name="use_a_usb_data_cable_and_unlock_your_iphone_allow_trust_an">Use a USB data cable and unlock your iPhone.\nAllow Trust and CarPlay if your iPhone asks.</string>
     <string name="use_hevc_leave_off_for_the_widest_head_unit_compatibility">Use HEVC. Leave off for the widest head-unit compatibility.</string>
+    <string name="hardware_video_overlay">Hardware video overlay</string>
+    <string name="hardware_video_overlay_desc">Render video on a hardware overlay (SurfaceView) instead of a texture — lower latency on weak GPUs. Applies on next connect.</string>
     <string name="use_software_hevc_decoder">Use software HEVC decoder</string>
     <string name="use_usage_content_type_routing_instead_of_stream_type">Use usage / content-type routing instead of stream type</string>
     <string name="use_your_last_connection_type_and_selected_iphone">Use your last connection type and selected iPhone.</string>

@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.media
 
+import android.annotation.SuppressLint
 import android.media.AudioFormat as AndroidAudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -39,6 +40,9 @@ internal class MicrophoneUplink(
     @Volatile private var effects: List<AudioEffect> = emptyList()
     private var thread: Thread? = null
 
+    // RECORD_AUDIO is granted at runtime through the app permission flow before the
+    // microphone uplink can be enabled.
+    @SuppressLint("MissingPermission")
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return true
 

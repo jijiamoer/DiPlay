@@ -1,6 +1,7 @@
 package com.shilapi.xcertplay.orchestration
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothDevice
@@ -905,6 +906,9 @@ class CarPlayController(
         }
     }
 
+    // BLUETOOTH_CONNECT is requested at runtime in the wireless flow; below 31 the
+    // legacy BLUETOOTH permission is install-time and always granted.
+    @SuppressLint("MissingPermission")
     private fun runWireless(generation: Int) {
         try {
             debugLog("wireless bring-up generation=$generation starting")
@@ -1036,7 +1040,11 @@ class CarPlayController(
             bonjourClient.start()
             startedBonjour = bonjourClient
             diagnostics.start()
-            debugLog("wireless Bonjour services started mode=interface iface=${hotspotInfo.interfaceName ?: "unknown"}")
+            debugLog(
+                "wireless Bonjour services started mode=" +
+                    "${if (bonjourClient.interfaceMdnsActive) "interface" else "system-nsd"} " +
+                    "iface=${hotspotInfo.interfaceName ?: "unknown"}",
+            )
             if (isStaleWirelessRun(generation)) {
                 closeWirelessStack()
                 return
@@ -1788,8 +1796,20 @@ class CarPlayController(
             throw IOException("The car hotspot is off. Turn it on in the car settings and connect again.")
         }
         val manager: WirelessHotspotManager = when (hotspotMode) {
-            WirelessHotspotMode.WIFI_P2P -> WifiP2pGroupManager(appContext, ::debugLog)
-            WirelessHotspotMode.LOCAL_ONLY_HOTSPOT -> LocalOnlyHotspotManager(appContext, ::debugLog)
+            // WifiP2pGroupManager is @RequiresApi(Q); the mode remap above already routes
+            // pre-Q devices to LocalOnlyHotspot, so this arm is only reachable on 29+.
+            WirelessHotspotMode.WIFI_P2P -> {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                    throw IOException("Wi-Fi P2P hotspot requires Android 10 (API 29) or newer")
+                }
+                WifiP2pGroupManager(appContext, ::debugLog)
+            }
+            WirelessHotspotMode.LOCAL_ONLY_HOTSPOT -> {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                    throw IOException("LocalOnlyHotspot requires Android 8.0 (API 26) or newer")
+                }
+                LocalOnlyHotspotManager(appContext, ::debugLog)
+            }
             WirelessHotspotMode.MANUAL -> ManualHotspotManager(
                 context = appContext,
                 ssid = config.manualHotspotSsid
@@ -1824,6 +1844,7 @@ class CarPlayController(
     private fun isStaleWirelessRun(generation: Int): Boolean =
         closed || phase != Phase.WIRELESS || generation != wirelessGeneration.get()
 
+    @SuppressLint("MissingPermission")
     private fun selectWirelessBluetoothDevice(adapter: BluetoothAdapter): BluetoothDevice {
         val bonded = adapter.bondedDevices.orEmpty()
         config.wirelessBluetoothDeviceAddress?.let { selected ->
@@ -2007,6 +2028,9 @@ class CarPlayController(
     }
 
     @Suppress("DEPRECATION")
+    // LOCAL_MAC_ADDRESS is a privileged permission regular apps cannot hold; SecurityException
+    // is already handled above, so lint cannot prove a grant that can never exist.
+    @SuppressLint("MissingPermission")
     private fun accessoryBluetoothMac(adapter: BluetoothAdapter): String {
         val address = try {
             adapter.address

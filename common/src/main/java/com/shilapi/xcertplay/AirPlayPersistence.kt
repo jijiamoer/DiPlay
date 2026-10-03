@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
@@ -39,6 +40,7 @@ object AirPlayPersistence {
     private const val KEY_DISPLAY_SCALE_TENTHS = "display_scale_tenths"
     private const val KEY_UI_SCALE_PERCENT = "ui_scale_percent"
     private const val KEY_HEVC_ENABLED = "hevc_enabled"
+    private const val KEY_HARDWARE_OVERLAY_VIDEO = "hardware_overlay_video"
     private const val KEY_HEVC_SOFTWARE_DECODER = "hevc_software_decoder"
     private const val KEY_ADVANCED_AUDIO_CHANNEL_MAPPING = "advanced_audio_channel_mapping"
     private const val KEY_AUDIO_FOCUS_ENABLED = "audio_focus_enabled"
@@ -91,8 +93,21 @@ object AirPlayPersistence {
     fun loadDisplayScaleTenths(context: Context): Int {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return CarPlayDisplayScale.sanitize(
-            prefs.getInt(KEY_DISPLAY_SCALE_TENTHS, CarPlayDisplayScale.DEFAULT_TENTHS),
+            prefs.getInt(KEY_DISPLAY_SCALE_TENTHS, defaultDisplayScaleTenths(context)),
         )
+    }
+
+    /** Weak head units (8227L-class, <=2 GB RAM) cannot decode a full-size CarPlay stream. */
+    private fun defaultDisplayScaleTenths(context: Context): Int =
+        if (isLowMemoryDevice(context)) 6 else CarPlayDisplayScale.DEFAULT_TENTHS
+
+    private fun isLowMemoryDevice(context: Context): Boolean {
+        val activityManager =
+            context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+        if (activityManager.isLowRamDevice) return true
+        val info = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(info)
+        return info.totalMem in 1..2L * 1024 * 1024 * 1024
     }
 
     fun saveDisplayScaleTenths(context: Context, tenths: Int) {
@@ -104,6 +119,21 @@ object AirPlayPersistence {
     fun loadHevcEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_HEVC_ENABLED, false)
+
+    /**
+     * Hardware-overlay (SurfaceView) video rendering: skips the per-frame GPU texture
+     * composite TextureView requires. Defaults on for low-memory head units where the
+     * extra composition pass measurably adds latency.
+     */
+    fun loadHardwareOverlayVideo(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_HARDWARE_OVERLAY_VIDEO, isLowMemoryDevice(context))
+
+    fun saveHardwareOverlayVideo(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_HARDWARE_OVERLAY_VIDEO, enabled)
+            .apply()
+    }
 
     fun loadUiScalePercent(context: Context): Int = CarPlayUiScale.sanitize(
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

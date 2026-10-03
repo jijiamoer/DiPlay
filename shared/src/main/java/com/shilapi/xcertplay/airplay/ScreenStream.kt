@@ -59,8 +59,14 @@ class ScreenStream(private val key: ByteArray, private val onDiagnostic: (String
     }
 
     private fun accept(bound: ServerSocket) {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
         try {
             val accepted = bound.accept()
+            // Bound the kernel backlog: on a congested link the sender would otherwise
+            // fill a multi-second window and every rendered frame stays stale by that
+            // amount. A small buffer keeps shown frames near-live at the cost of sender
+            // throttling (drop a frame instead of playing it seconds late).
+            runCatching { accepted.receiveBufferSize = VIDEO_RECEIVE_BUFFER_BYTES }
             socket = accepted
             run(accepted)
         } catch (error: Exception) {
@@ -149,6 +155,9 @@ class ScreenStream(private val key: ByteArray, private val onDiagnostic: (String
         const val MAX_BODY = 8 * 1024 * 1024
         const val INITIAL_BODY_BYTES = 64 * 1024
         const val RETAINED_BODY_MAX = 2 * 1024 * 1024
+        // ~0.4 s of a 5 Mbit stream; keyframe bursts trickle through rather than
+        // letting the kernel accumulate a second-plus backlog.
+        const val VIDEO_RECEIVE_BUFFER_BYTES = 256 * 1024
     }
 }
 

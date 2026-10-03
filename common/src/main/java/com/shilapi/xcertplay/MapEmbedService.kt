@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay
 
+import android.annotation.SuppressLint
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -32,6 +33,9 @@ import com.shilapi.xcertplay.host.R
  * SurfaceView; the map then lives in the launcher's layout. Each attached view gets its own decoder.
  * Off until the driver allows it in DiPlay. Android 11+. See docs/LAUNCHER_INTEGRATION.md.
  */
+// Embed is @RequiresApi(R): attach() refuses on older releases, so every embeds access below is
+// unreachable there even though lint cannot see the version gate in a separate method.
+@SuppressLint("NewApi")
 class MapEmbedService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val messenger = Messenger(Handler(Looper.getMainLooper()) { handle(it); true })

@@ -16,6 +16,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
+import android.annotation.SuppressLint
 import androidx.annotation.RequiresApi
 import com.shilapi.xcertplay.transport.Iap2WirelessSecurity
 import java.io.IOException
@@ -36,6 +37,7 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * The group is deliberately not persistent. [close] removes it and releases the callback thread.
  */
+@RequiresApi(Build.VERSION_CODES.Q)
 class WifiP2pGroupManager(
     context: Context,
     private val diagnostic: (String) -> Unit = {},
@@ -69,6 +71,7 @@ class WifiP2pGroupManager(
     @Volatile private var observedCreatedName: String? = null
     @Volatile private var requestedName: String? = null
 
+    @SuppressLint("MissingPermission") // location/nearby permission verified by checkPrerequisites
     override fun connectionDiagnosticSnapshot(): String {
         val current = synchronized(stateLock) { if (closed) null else channel }
             ?: return "p2pGroup=unavailable association=unknown"
@@ -93,6 +96,7 @@ class WifiP2pGroupManager(
         }
     }
 
+    @SuppressLint("MissingPermission") // see checkPrerequisites: NEARBY_WIFI_DEVICES / ACCESS_FINE_LOCATION
     override fun start(timeoutMillis: Long): WirelessHotspotInfo {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             throw IOException("Wi-Fi P2P credentials require Android 10 (API 29) or newer")
@@ -431,6 +435,7 @@ class WifiP2pGroupManager(
         }
     }
 
+    @SuppressLint("MissingPermission") // caller verified location permission before wireless start
     private fun requestGroupInfo(
         attempt: StartAttempt,
         channel: WifiP2pManager.Channel,
@@ -649,6 +654,7 @@ class WifiP2pGroupManager(
         removeGroup(channel, waitForCallback = true, expectedName = expectedName)
     }
 
+    @SuppressLint("MissingPermission")
     private fun removeGroup(channel: WifiP2pManager.Channel, waitForCallback: Boolean,
         expectedName: String? = observedCreatedName ?: requestedName) {
         val latch = CountDownLatch(1)

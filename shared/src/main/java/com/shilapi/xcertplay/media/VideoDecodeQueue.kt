@@ -49,12 +49,14 @@ internal class VideoDecodeQueue(
     }
 
     @Synchronized fun discardFrames() {
-        jobs.removeIf { job ->
+        val iterator = jobs.iterator()
+        while (iterator.hasNext()) {
+            val job = iterator.next()
             if (job is VideoJob.Frame) {
                 frameCount -= 1
                 frameBytes -= job.nalus.size
             }
-            job is VideoJob.Frame || job is VideoJob.Resync
+            if (job is VideoJob.Frame || job is VideoJob.Resync) iterator.remove()
         }
     }
 

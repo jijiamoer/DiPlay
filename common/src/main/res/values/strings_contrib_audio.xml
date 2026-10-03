@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
     <string name="contrib_audio_home_channel_preview_unavailable">Cannot preview Android audio stream %1$d on this device.</string>
     <string name="contrib_audio_home_choice_summary">%1$s · %2$s</string>
     <string name="contrib_audio_home_media_channel_label">Media audio stream</string>

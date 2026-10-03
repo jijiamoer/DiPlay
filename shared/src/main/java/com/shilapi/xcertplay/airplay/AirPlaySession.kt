@@ -663,6 +663,9 @@ class AirPlaySession(
         try {
             val socket = server.accept()
             socket.setSoLinger(true, 0)
+            // Touch/HID reports are tiny writes; Nagle would hold them up to the delayed-ACK
+            // window (worst on congested 2.4 GHz), which is felt directly as input lag.
+            socket.tcpNoDelay = true
             debugLog("airplay event connection accepted from ${socket.remoteSocketAddress}")
             eventSocket = socket
             val shared = pairVerify.shared

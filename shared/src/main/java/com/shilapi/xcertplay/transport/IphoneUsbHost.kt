@@ -15,6 +15,7 @@ import android.hardware.usb.UsbManager
 import android.hardware.usb.UsbRequest
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 import java.io.Closeable
 import java.io.IOException
 import java.nio.ByteBuffer
@@ -340,6 +341,7 @@ class Iap2UsbSession internal constructor(
     // Reads are serialized by readLock, so one direct buffer can be reused instead of
     // allocating a fresh 64 KiB direct ByteBuffer for every USB read on weak units.
     private var readBuffer: ByteBuffer? = null
+    private var readArray: ByteArray? = null
 
     fun write(data: ByteArray, timeoutMillis: Int) = synchronized(writeLock) {
         checkOpen()
@@ -357,6 +359,22 @@ class Iap2UsbSession internal constructor(
     fun read(timeoutMillis: Long): ByteArray? = synchronized(readLock) {
         checkOpen()
         require(timeoutMillis > 0) { "timeoutMillis must be positive" }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            // UsbRequest.queue/requestWait are API 26+; bulkTransfer is the synchronous
+            // equivalent and unblocks when close() closes the connection.
+            val array = (readArray ?: ByteArray(USBMUX_READ_CHUNK_BYTES).also { readArray = it })
+            return@synchronized try {
+                val received = connection.bulkTransfer(
+                    inEndpoint, array, array.size,
+                    timeoutMillis.coerceAtMost(Int.MAX_VALUE - 1L).toInt(),
+                )
+                if (received <= 0) null else array.copyOf(received)
+            } catch (error: IphoneUsbException) {
+                throw error
+            } catch (error: RuntimeException) {
+                throw failSession("USBMUX read failed", error)
+            }
+        }
         val request = UsbRequest()
         var initialized = false
         try {
@@ -425,6 +443,8 @@ class Iap2UsbSession internal constructor(
         if (closed) throw IphoneUsbException.DeviceUnavailable("USBMUX session is closed")
     }
 
+    // Called only from the API 26+ requestWait path in read().
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun drainCancelledRead(request: UsbRequest) {
         if (!request.cancel()) {
             throw failSession("Android could not cancel timed out USBMUX read request")

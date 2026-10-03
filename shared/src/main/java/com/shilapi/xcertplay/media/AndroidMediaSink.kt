@@ -12,6 +12,7 @@ import android.media.MediaFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import android.view.Surface
 import com.shilapi.xcertplay.airplay.AudioCodecKind
@@ -42,6 +43,7 @@ internal class AudioFocusCoordinator(
     private val manager = context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private val active = LinkedHashMap<AudioTrack, Entry>()
     private var request: AudioFocusRequest? = null
+    private var legacyFocusRequested = false
     private var requestedChannel: AudioChannel? = null
     private val listener = AudioManager.OnAudioFocusChangeListener { change ->
         synchronized(this) {
@@ -70,29 +72,48 @@ internal class AudioFocusCoordinator(
     private fun refreshRequest() {
         val primary = active.values.maxByOrNull { it.channel.focusPriority() }
         if (primary == null) {
-            request?.let { manager?.abandonAudioFocusRequest(it) }
-            request = null
+            abandonFocus()
             requestedChannel = null
             return
         }
-        if (request != null && requestedChannel == primary.channel) return
-        request?.let { manager?.abandonAudioFocusRequest(it) }
+        if ((request != null || legacyFocusRequested) && requestedChannel == primary.channel) return
+        abandonFocus()
         val gain = when (primary.channel) {
             AudioChannel.MEDIA -> AudioManager.AUDIOFOCUS_GAIN
             AudioChannel.PHONE -> AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
             AudioChannel.ASSISTANT -> AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
             AudioChannel.NAVIGATION -> return
         }
-        val next = AudioFocusRequest.Builder(gain)
-            .setAudioAttributes(primary.attributes)
-            .setOnAudioFocusChangeListener(listener, Handler(Looper.getMainLooper()))
-            .build()
-        request = next
+        // AudioFocusRequest is API 26+; on older devices the legacy listener API is equivalent.
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val next = AudioFocusRequest.Builder(gain)
+                .setAudioAttributes(primary.attributes)
+                .setOnAudioFocusChangeListener(listener, Handler(Looper.getMainLooper()))
+                .build()
+            request = next
+            manager?.requestAudioFocus(next)
+        } else {
+            @Suppress("DEPRECATION")
+            manager?.requestAudioFocus(listener, AudioManager.STREAM_MUSIC, gain)
+                .also { legacyFocusRequested = it == AudioManager.AUDIOFOCUS_REQUEST_GRANTED }
+        }
         requestedChannel = primary.channel
-        val result = manager?.requestAudioFocus(next)
         val line = "Audio: focus requested channel=${primary.channel} gain=$gain granted=$result activeTracks=${active.size}"
         Log.i(TAG, line)
         runCatching { report(line) }
+    }
+
+    private fun abandonFocus() {
+        // request is only non-null on API 26+, but the call itself also needs the version gate.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            request?.let { manager?.abandonAudioFocusRequest(it) }
+        }
+        request = null
+        if (legacyFocusRequested) {
+            @Suppress("DEPRECATION")
+            manager?.abandonAudioFocus(listener)
+            legacyFocusRequested = false
+        }
     }
 
     private fun setVolume(volume: Float) {
@@ -288,7 +309,7 @@ class AndroidMediaSink(
         // This callback runs on the downlink thread; microphone failures must not stop playback.
         try {
             if (config.audioType == "telephony") enterCommunicationMode(id)
-            val uplink = microphoneUplinks.computeIfAbsent(id) { MicrophoneUplink(config, onAudioDiagnostic) }
+            val uplink = microphoneUplinks.computeIfAbsentCompat(id) { MicrophoneUplink(config, onAudioDiagnostic) }
             if (!uplink.start()) {
                 microphoneUplinks.remove(id, uplink)
                 restoreAudioMode(id)
@@ -364,7 +385,7 @@ class AndroidMediaSink(
     }
 
     private fun videoDecoder(type: Int): VideoDecoder =
-        videoDecoders.computeIfAbsent(type) { newVideoDecoder(type, surfaces[type] ?: defaultSurface) }
+        videoDecoders.computeIfAbsentCompat(type) { newVideoDecoder(type, surfaces[type] ?: defaultSurface) }
 
     private fun newVideoDecoder(type: Int, surface: Surface?, statsLabel: String? = null) = VideoDecoder(
         type,
@@ -445,6 +466,8 @@ private class VideoDecoder(
     }
 
     private fun run() {
+        // Weak head units starve the decoder under default priority and drop video.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
         try {
             while (running) {
                 val job = queue.poll(5)
@@ -506,8 +529,11 @@ private class VideoDecoder(
                 ?.let { listOf(it) } ?: emptyList()
         } else {
             val (sps, pps) = MediaCodecSupport.avcParameterSets(codecData)
+            // Rewrite the SPS so reordering-hungry decoders do not hold output back.
+            val tunedSps = MediaCodecSupport.lowLatencyAvcSps(sps)
+            if (!tunedSps.contentEquals(sps)) Log.i(TAG, "video SPS patched for low-delay decode")
             listOfNotNull(
-                sps.takeIf { it.isNotEmpty() }?.let { START_CODE + it },
+                tunedSps.takeIf { it.isNotEmpty() }?.let { START_CODE + it },
                 pps.takeIf { it.isNotEmpty() }?.let { START_CODE + it },
             )
         }
@@ -559,9 +585,14 @@ private class VideoDecoder(
             val format = buildFormat(mime, csd, attempt.tuned)
             val codec = attempt.codecName?.let { MediaCodec.createByCodecName(it) } ?: createDecoder(mime)
             candidate = codec
-            if (attempt.tuned && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                codec.codecInfo.getCapabilitiesForType(mime).isFeatureSupported("low-latency")) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            if (attempt.tuned) {
+                // Vendor decoders on old head units often honour the string key even where
+                // the platform constant does not exist; ignored where unsupported.
+                format.setInteger("low-latency", 1)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                    codec.codecInfo.getCapabilitiesForType(mime).isFeatureSupported("low-latency")) {
+                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
             }
             codec.configure(format, surface, null, 0)
             codec.start()
@@ -829,7 +860,14 @@ private class AudioRenderer(
             packetsReceived.incrementAndGet()
             val now = System.nanoTime()
             val previous = lastArrivalNs.getAndSet(now)
-            if (previous != 0L) maxArrivalGapMs.accumulateAndGet((now - previous) / 1_000_000L, ::maxOf)
+            if (previous != 0L) {
+                // accumulateAndGet is API 24+; a CAS loop keeps the same semantics on API 23.
+                val gap = (now - previous) / 1_000_000L
+                while (true) {
+                    val current = maxArrivalGapMs.get()
+                    if (gap <= current || maxArrivalGapMs.compareAndSet(current, gap)) break
+                }
+            }
         }
         if (!started || !queue.offer(AudioPacket(rtp, sample))) {
             if (started) packetsDropped.incrementAndGet()
@@ -847,6 +885,8 @@ private class AudioRenderer(
     }
 
     private fun run() {
+        // Audio underruns on weak head units present as crackling; keep writes fed.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         try {
             when (format.codec) {
                 AudioCodecKind.AAC_LC -> configureCodec(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -961,7 +1001,8 @@ private class AudioRenderer(
             )
         }
         track = built
-        trackAttributes = built.audioAttributes
+        // AudioTrack.audioAttributes is API 29+; the requested attributes already captured above.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) trackAttributes = built.audioAttributes
         val capacityBytes = built.bufferSizeInFrames * frameBytes
         startThresholdBytes = MediaAudioBuffer.startBytesFor(plan.startBytes, capacityBytes, PREBUFFER_WRITE_CHUNK_BYTES)
         report("Audio: ready audioType=${format.audioType} codec=${format.codec} " +
@@ -1305,7 +1346,7 @@ private class AudioRenderer(
     }
 
     private fun startPlayback(track: AudioTrack) {
-        underrunsAtPlaybackStart = track.underrunCount
+        underrunsAtPlaybackStart = underrunCountCompat(track)
         track.play()
         playbackStarted = true
     }
@@ -1313,7 +1354,7 @@ private class AudioRenderer(
     private fun maintainPlaybackBuffer() {
         val track = track ?: return
         if (bufferProgress.shouldRebuffer(mappedChannel == AudioChannel.MEDIA, playbackStarted,
-                track.underrunCount > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition)) {
+                underrunCountCompat(track) > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition)) {
             // The hardware buffer has actually drained. Pause without flushing or discarding PCM,
             // then use the configured start threshold again when music resumes.
             track.pause()
@@ -1333,7 +1374,7 @@ private class AudioRenderer(
         val now = System.nanoTime()
         if (statsWindowStartNs == 0L) statsWindowStartNs = now
         if (!force && now - statsWindowStartNs < STATS_WINDOW_NS) return
-        val underruns = track?.underrunCount ?: 0
+        val underruns = track?.let(::underrunCountCompat) ?: 0
         val lastRx = lastArrivalNs.get()
         val currentTrack = track
         val playbackHeadFrames = currentTrack?.playbackHeadPosition
@@ -1448,3 +1489,11 @@ private class AudioRenderer(
         const val DECODED_BUFFER_LOG_INTERVAL = 50
     }
 }
+
+/** AudioTrack.getUnderrunCount is API 24+; before it there is no way to observe underruns. */
+private fun underrunCountCompat(track: AudioTrack): Int =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) track.underrunCount else 0
+
+/** ConcurrentHashMap.computeIfAbsent is API 24+; synchronized creation keeps it atomic on API 23. */
+private fun <K, V> ConcurrentHashMap<K, V>.computeIfAbsentCompat(key: K, factory: () -> V): V =
+    get(key) ?: synchronized(this) { get(key) ?: factory().also { put(key, it) } }
