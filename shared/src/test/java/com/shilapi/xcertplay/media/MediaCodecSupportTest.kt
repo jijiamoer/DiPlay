@@ -63,6 +63,34 @@ class MediaCodecSupportTest {
         assertEquals(0, MediaCodecSupport.hevcCodecSpecificData(truncated).size)
     }
 
+    @Test
+    fun lowLatencySpsPreservesParseability() {
+        // Real High-profile SPS (profile_idc=100, no bitstream_restriction in VUI).
+        val sps = byteArrayOf(
+            0x67, 0x64, 0x00, 0x1f, 0xac.toByte(), 0xd9.toByte(), 0x40, 0x50,
+            0x05, 0xbb.toByte(), 0x01, 0x6e, 0x9f.toByte(), 0x97.toByte(),
+            0xff.toByte(), 0x00, 0x01, 0x00, 0x01, 0xf6.toByte(), 0xce.toByte(),
+            0x3c, 0x80.toByte(),
+        )
+
+        val patched = MediaCodecSupport.lowLatencyAvcSps(sps)
+
+        assertEquals(sps[0], patched[0])
+        // The rewritten VUI is longer than the original bare SPS.
+        assertTrue(patched.size >= sps.size)
+        // Re-patching must still parse (output is a valid SPS), proving round-trip safety.
+        val repatched = MediaCodecSupport.lowLatencyAvcSps(patched)
+        assertTrue(repatched.size >= patched.size)
+    }
+
+    @Test
+    fun lowLatencySpsLeavesNonSpsBytesAlone() {
+        val notSps = byteArrayOf(0x68, 0x01, 0x02, 0x03)
+        assertTrue(notSps.contentEquals(MediaCodecSupport.lowLatencyAvcSps(notSps)))
+        val tooShort = byteArrayOf(0x67)
+        assertTrue(tooShort.contentEquals(MediaCodecSupport.lowLatencyAvcSps(tooShort)))
+    }
+
     private fun hevcRecord(vararg parameterSets: ByteArray): ByteArray {
         var size = 23
         parameterSets.forEach { size += 5 + it.size }

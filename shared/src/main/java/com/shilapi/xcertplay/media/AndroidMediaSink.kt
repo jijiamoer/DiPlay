@@ -529,8 +529,11 @@ private class VideoDecoder(
                 ?.let { listOf(it) } ?: emptyList()
         } else {
             val (sps, pps) = MediaCodecSupport.avcParameterSets(codecData)
+            // Rewrite the SPS so reordering-hungry decoders do not hold output back.
+            val tunedSps = MediaCodecSupport.lowLatencyAvcSps(sps)
+            if (!tunedSps.contentEquals(sps)) Log.i(TAG, "video SPS patched for low-delay decode")
             listOfNotNull(
-                sps.takeIf { it.isNotEmpty() }?.let { START_CODE + it },
+                tunedSps.takeIf { it.isNotEmpty() }?.let { START_CODE + it },
                 pps.takeIf { it.isNotEmpty() }?.let { START_CODE + it },
             )
         }
@@ -582,9 +585,14 @@ private class VideoDecoder(
             val format = buildFormat(mime, csd, attempt.tuned)
             val codec = attempt.codecName?.let { MediaCodec.createByCodecName(it) } ?: createDecoder(mime)
             candidate = codec
-            if (attempt.tuned && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                codec.codecInfo.getCapabilitiesForType(mime).isFeatureSupported("low-latency")) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            if (attempt.tuned) {
+                // Vendor decoders on old head units often honour the string key even where
+                // the platform constant does not exist; ignored where unsupported.
+                format.setInteger("low-latency", 1)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                    codec.codecInfo.getCapabilitiesForType(mime).isFeatureSupported("low-latency")) {
+                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
             }
             codec.configure(format, surface, null, 0)
             codec.start()

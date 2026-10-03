@@ -172,6 +172,19 @@ object MediaCodecSupport {
 
     private fun emptySet(): Pair<ByteArray, ByteArray> = ByteArray(0) to ByteArray(0)
 
+    /**
+     * Rewrites an H.264 SPS NAL so the decoder need not buffer pictures for reordering.
+     * When a stream omits the VUI bitstream_restriction block, some decoders allocate a
+     * conservative DPB and hold decoded frames for hundreds of milliseconds before output,
+     * which is felt as constant input lag regardless of resolution. Returns the original
+     * bytes untouched whenever the NAL cannot be parsed safely.
+     */
+    fun lowLatencyAvcSps(spsNal: ByteArray): ByteArray = try {
+        LowDelaySps.patch(spsNal)
+    } catch (error: Exception) {
+        spsNal
+    }
+
     private fun readParameterSets(source: ByteArray, offset: Int, count: Int): List<ByteArray> {
         val sets = ArrayList<ByteArray>(count)
         var cursor = offset
@@ -198,4 +211,214 @@ object MediaCodecSupport {
 
     private const val HEVC_FIXED_RECORD_SIZE = 23
     private const val HEVC_ARRAY_COUNT_OFFSET = 22
+}
+
+/**
+ * Bit-level SPS (seq_parameter_set) rewriter for H.264. Copies the header verbatim up
+ * to vui_parameters_present_flag, then writes a VUI that forces
+ * bitstream_restriction_flag=1, max_num_reorder_frames=0, and
+ * max_dec_frame_buffering=max_num_ref_frames — the "no reordering, no extra latency"
+ * contract. Any parse surprise aborts and the caller keeps the untouched NAL.
+ */
+private object LowDelaySps {
+    fun patch(spsNal: ByteArray): ByteArray {
+        require(spsNal.size >= 4 && spsNal[0].toInt() and 0x1f == 7) { "not an SPS NAL" }
+        val reader = ExpReader(deEmphasis(spsNal.copyOfRange(1, spsNal.size)))
+        val writer = ExpWriter()
+        val c = Copier(reader, writer)
+
+        c.bits(24) // profile_idc + constraint flags + level_idc
+        val profileIdc = spsNal[1].toInt() and 0xff
+        c.ue() // seq_parameter_set_id
+        var chromaFormatIdc = 1
+        if (profileIdc in HIGH_PROFILES) {
+            chromaFormatIdc = c.ue()
+            if (chromaFormatIdc == 3) c.bit() // separate_colour_plane_flag
+            c.ue() // bit_depth_luma_minus8
+            c.ue() // bit_depth_chroma_minus8
+            c.bit() // qpprime_y_zero_transform_bypass_flag
+            if (c.bit() == 1) { // seq_scaling_matrix_present_flag
+                val lists = if (chromaFormatIdc == 3) 12 else 8
+                for (i in 0 until lists) {
+                    if (c.bit() == 1) copyScalingList(c, if (i < 6) 16 else 64)
+                }
+            }
+        }
+        c.ue() // log2_max_frame_num_minus4
+        val picOrderCntType = c.ue()
+        if (picOrderCntType == 0) c.ue() else if (picOrderCntType == 1) {
+            c.bit() // delta_pic_order_always_zero_flag
+            c.se() // offset_for_non_ref_pic
+            c.se() // offset_for_top_to_bottom_field
+            repeat(c.ue()) { c.se() } // offset_for_ref_frame[i]
+        }
+        val maxRefFrames = c.ue()
+        c.bit() // gaps_in_frame_num_value_allowed_flag
+        c.ue() // pic_width_in_mbs_minus1
+        c.ue() // pic_height_in_map_units_minus1
+        if (c.bit() == 0) c.bit() // frame_mbs_only_flag, then mb_adaptive_frame_field_flag
+        c.bit() // direct_8x8_inference_flag
+        if (c.bit() == 1) { // frame_cropping_flag
+            c.ue(); c.ue(); c.ue(); c.ue()
+        }
+
+        writer.bit(1) // vui_parameters_present_flag — always write our own VUI
+        if (reader.bit() == 1) {
+            copyVui(reader, writer, maxRefFrames)
+        } else {
+            writeEmptyVuiHead(writer)
+            writeRestrictionBlock(writer, maxRefFrames)
+        }
+        writer.rbspTrailing()
+
+        val rbsp = writer.toByteArray()
+        return byteArrayOf(spsNal[0]) + emphasize(rbsp)
+    }
+
+    /**
+     * Copies the leading VUI fields verbatim, consumes whatever restriction block the
+     * original had, and emits the low-delay block in its place.
+     */
+    private fun copyVui(reader: ExpReader, writer: ExpWriter, maxRefFrames: Int) {
+        val c = Copier(reader, writer)
+        if (c.bit() == 1) { // aspect_ratio_info_present_flag
+            val idc = c.bits(8)
+            if (idc == 255) c.bits(32) // sar_width + sar_height
+        }
+        if (c.bit() == 1) c.bit() // overscan_info_present_flag -> overscan_appropriate_flag
+        if (c.bit() == 1) { // video_signal_type_present_flag
+            c.bits(4) // video_format + video_full_range_flag
+            if (c.bit() == 1) c.bits(24) // colour_description_present_flag -> primaries etc.
+        }
+        if (c.bit() == 1) { // chroma_loc_info_present_flag
+            c.ue(); c.ue()
+        }
+        if (c.bit() == 1) c.bits(33) // timing_info_present_flag -> num_units/time_scale/fixed
+        var hrdPresent = false
+        if (c.bit() == 1) { copyHrd(c); hrdPresent = true } // nal_hrd_parameters_present_flag
+        if (c.bit() == 1) { copyHrd(c); hrdPresent = true } // vcl_hrd_parameters_present_flag
+        if (hrdPresent) c.bit() // low_delay_hrd_flag
+        c.bit() // pic_struct_present_flag
+        if (reader.bit() == 1) { // consume the original restriction fields
+            reader.bit(); repeat(6) { reader.ue() }
+        }
+        writeRestrictionBlock(writer, maxRefFrames)
+    }
+
+    private fun writeEmptyVuiHead(writer: ExpWriter) {
+        writer.bit(0) // aspect_ratio_info_present_flag
+        writer.bit(0) // overscan_info_present_flag
+        writer.bit(0) // video_signal_type_present_flag
+        writer.bit(0) // chroma_loc_info_present_flag
+        writer.bit(0) // timing_info_present_flag
+        writer.bit(0) // nal_hrd_parameters_present_flag
+        writer.bit(0) // vcl_hrd_parameters_present_flag
+        // (no HRD -> no low_delay_hrd_flag)
+        writer.bit(0) // pic_struct_present_flag
+    }
+
+    private fun writeRestrictionBlock(writer: ExpWriter, maxRefFrames: Int) {
+        writer.bit(1) // bitstream_restriction_flag
+        writer.bit(1) // motion_vectors_over_pic_boundaries_flag
+        writer.ue(0) // max_bytes_per_pic_denom
+        writer.ue(0) // max_bits_per_mb_denom
+        writer.ue(0) // log2_max_mv_length_horizontal
+        writer.ue(0) // log2_max_mv_length_vertical
+        writer.ue(0) // max_num_reorder_frames — the point of the exercise
+        writer.ue(maxRefFrames.coerceAtLeast(1)) // max_dec_frame_buffering
+    }
+
+    private fun copyHrd(c: Copier) {
+        val cpbCount = c.ue() + 1
+        c.bits(8) // bit_rate_scale + cpb_size_scale
+        repeat(cpbCount) { c.ue(); c.ue(); c.bit() }
+        c.bits(20) // the five delay/offset lengths
+    }
+
+    private fun copyScalingList(c: Copier, size: Int) {
+        var lastScale = 8
+        var nextScale = 8
+        for (i in 0 until size) {
+            if (nextScale != 0) {
+                val delta = c.se()
+                nextScale = (lastScale + delta + 256) % 256
+            }
+            lastScale = if (nextScale == 0) lastScale else nextScale
+        }
+    }
+
+    private fun deEmphasis(nal: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream(nal.size)
+        var zeros = 0
+        for (byte in nal) {
+            if (zeros >= 2 && byte.toInt() and 0xff == 3) { zeros = 0; continue }
+            zeros = if (byte.toInt() == 0) zeros + 1 else 0
+            out.write(byte.toInt())
+        }
+        return out.toByteArray()
+    }
+
+    private fun emphasize(rbsp: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream(rbsp.size + rbsp.size / 4)
+        var zeros = 0
+        for (byte in rbsp) {
+            val value = byte.toInt() and 0xff
+            if (zeros >= 2 && value <= 3) { out.write(3); zeros = 0 }
+            out.write(value)
+            zeros = if (value == 0) zeros + 1 else 0
+        }
+        return out.toByteArray()
+    }
+
+    private val HIGH_PROFILES = setOf(100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135)
+
+    /** Reads Exp-Golomb and plain bits, echoing them into a writer verbatim. */
+    private class Copier(private val reader: ExpReader, private val writer: ExpWriter) {
+        fun bit(): Int = reader.bit().also(writer::bit)
+        fun bits(n: Int): Int = reader.bits(n).also { writer.bits(it, n) }
+        fun ue(): Int = reader.ue().also(writer::ue)
+        fun se(): Int = reader.se().also(writer::se)
+    }
+
+    private class ExpReader(private val data: ByteArray) {
+        private var pos = 0
+        fun bit(): Int {
+            check(pos < data.size * 8) { "SPS bitstream overrun" }
+            val value = (data[pos / 8].toInt() shr (7 - pos % 8)) and 1
+            pos++
+            return value
+        }
+        fun bits(n: Int): Int { var v = 0; repeat(n) { v = (v shl 1) or bit() }; return v }
+        fun ue(): Int {
+            var leadingZeros = 0
+            while (bit() == 0) leadingZeros++
+            if (leadingZeros == 0) return 0
+            return (1 shl leadingZeros) - 1 + bits(leadingZeros)
+        }
+        fun se(): Int {
+            val ue = ue()
+            return if (ue and 1 == 0) -(ue / 2) else (ue + 1) / 2
+        }
+    }
+
+    private class ExpWriter {
+        private val out = ByteArrayOutputStream(64)
+        private var acc = 0
+        private var pos = 0
+        fun bit(v: Int) {
+            acc = (acc shl 1) or (v and 1)
+            pos++
+            if (pos % 8 == 0) { out.write(acc); acc = 0 }
+        }
+        fun bits(value: Int, n: Int) { for (i in n - 1 downTo 0) bit((value shr i) and 1) }
+        fun ue(value: Int) {
+            val codeNum = value + 1
+            val infoBits = Integer.toBinaryString(codeNum).length - 1
+            repeat(infoBits) { bit(0) }
+            bits(codeNum, infoBits + 1)
+        }
+        fun se(value: Int) = ue(if (value <= 0) -2 * value else 2 * value - 1)
+        fun rbspTrailing() { bit(1); while (pos % 8 != 0) bit(0) }
+        fun toByteArray(): ByteArray = out.toByteArray()
+    }
 }
