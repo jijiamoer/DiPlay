@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay
 
+import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
@@ -91,8 +92,21 @@ object AirPlayPersistence {
     fun loadDisplayScaleTenths(context: Context): Int {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return CarPlayDisplayScale.sanitize(
-            prefs.getInt(KEY_DISPLAY_SCALE_TENTHS, CarPlayDisplayScale.DEFAULT_TENTHS),
+            prefs.getInt(KEY_DISPLAY_SCALE_TENTHS, defaultDisplayScaleTenths(context)),
         )
+    }
+
+    /** Weak head units (8227L-class, <=2 GB RAM) cannot decode a full-size CarPlay stream. */
+    private fun defaultDisplayScaleTenths(context: Context): Int =
+        if (isLowMemoryDevice(context)) 6 else CarPlayDisplayScale.DEFAULT_TENTHS
+
+    private fun isLowMemoryDevice(context: Context): Boolean {
+        val activityManager =
+            context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+        if (activityManager.isLowRamDevice) return true
+        val info = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(info)
+        return info.totalMem in 1..2L * 1024 * 1024 * 1024
     }
 
     fun saveDisplayScaleTenths(context: Context, tenths: Int) {
