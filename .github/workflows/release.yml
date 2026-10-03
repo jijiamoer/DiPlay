@@ -1,0 +1,80 @@
+name: Release APK
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag name for a GitHub Release (leave empty for an artifact-only build)"
+        required: false
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject credential files in public source
+        run: python3 scripts/check_public_tree.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Decode signing key and accessory identity
+        run: |
+          set -euo pipefail
+          for v in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS \
+                   ANDROID_KEY_PASSWORD MFI_IDENTITY_PK8_BASE64 MFI_CERTIFICATE_P7B_BASE64; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing secret $v — see docs/RELEASE-WORKFLOW.md"
+              exit 1
+            fi
+          done
+          mkdir -p "$DIPLAY_AUTH_ASSETS_DIR/offline-mfi"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$ANDROID_KEYSTORE_PATH"
+          echo "$MFI_IDENTITY_PK8_BASE64" | base64 -d > "$DIPLAY_AUTH_ASSETS_DIR/offline-mfi/identity.pk8"
+          echo "$MFI_CERTIFICATE_P7B_BASE64" | base64 -d > "$DIPLAY_AUTH_ASSETS_DIR/offline-mfi/certificate.p7b"
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          MFI_IDENTITY_PK8_BASE64: ${{ secrets.MFI_IDENTITY_PK8_BASE64 }}
+          MFI_CERTIFICATE_P7B_BASE64: ${{ secrets.MFI_CERTIFICATE_P7B_BASE64 }}
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/release.jks
+          DIPLAY_AUTH_ASSETS_DIR: ${{ github.workspace }}/auth-assets
+      - name: Build release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          DIPLAY_AUTH_ASSETS_DIR: ${{ github.workspace }}/auth-assets
+        run: ./gradlew :mobile:assembleRelease
+      - name: Package APK and checksum
+        run: |
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' mobile/build.gradle.kts)
+          TAG_INPUT="${{ inputs.tag_name }}"
+          NAME="DiPlay-${VERSION}${TAG_INPUT:+-${TAG_INPUT}}.apk"
+          cp mobile/build/outputs/apk/release/mobile-release.apk "$NAME"
+          sha256sum "$NAME" > SHA256SUMS.txt
+          echo "APK_NAME=$NAME" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_NAME }}
+          path: |
+            ${{ env.APK_NAME }}
+            SHA256SUMS.txt
+          retention-days: 30
+      - name: Publish GitHub Release
+        if: ${{ inputs.tag_name != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          generate_release_notes: true
+          files: |
+            ${{ env.APK_NAME }}
+            SHA256SUMS.txt
