@@ -169,6 +169,9 @@ class CarPlayBonjour(
     @Volatile
     private var activeSocket: Socket? = null
     private var interfaceMdns: JmDNS? = null
+    /** Whether the per-interface JmDNS stack is running; false after an EADDRINUSE fallback to NSD. */
+    @Volatile var interfaceMdnsActive = false
+        private set
 
     private val interfaceListener = object : ServiceListener {
         override fun serviceAdded(event: ServiceEvent) {
@@ -261,14 +264,27 @@ class CarPlayBonjour(
                     val address = requireNotNull(localAdvertisedAddress) {
                         "Interface mDNS requires a local advertised address"
                     }
-                    val dns = JmDNS.create(address, "carplay-${config.deviceId.replace(":", "")}")
-                    interfaceMdns = dns
-                    dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
-                    dns.registerService(ServiceInfo.create(
-                        "$AIRPLAY_SERVICE_TYPE.local.", config.deviceName, config.port,
-                        0, 0, CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
-                    ))
-                } else {
+                    interfaceMdnsActive = try {
+                        val dns = JmDNS.create(address, "carplay-${config.deviceId.replace(":", "")}")
+                        interfaceMdns = dns
+                        dns.addServiceListener("$CARPLAY_CONTROL_SERVICE_TYPE.local.", interfaceListener)
+                        dns.registerService(ServiceInfo.create(
+                            "$AIRPLAY_SERVICE_TYPE.local.", config.deviceName, config.port,
+                            0, 0, CarPlayBonjourProtocol.airPlayTxtRecords(config, identity),
+                        ))
+                        true
+                    } catch (error: Exception) {
+                        // Some head units (e.g. 8227L stock CarPlay daemons, Android's own mDNS
+                        // responder) already hold UDP 5353 and JmDNS cannot share it. Fall back to
+                        // the platform mDNS responder instead of failing the whole bring-up.
+                        Log.w(TAG, "interface mDNS unavailable (${error.message}); " +
+                            "publishing through system NSD instead")
+                        runCatching { interfaceMdns?.close() }
+                        interfaceMdns = null
+                        false
+                    }
+                }
+                if (!interfaceMdnsActive) {
                     registerAirPlay()
                     registrationRequested = true
                     nsdManager.discoverServices(
@@ -368,7 +384,7 @@ class CarPlayBonjour(
 
     private fun runWorker() {
         while (!closed) {
-            if (useInterfaceMdns) {
+            if (interfaceMdnsActive) {
                 try {
                     while (true) emit(discoveryEvents.poll() ?: break)
                     val (endpoint, address) = interfaceServices.poll(

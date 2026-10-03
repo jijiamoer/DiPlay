@@ -1040,7 +1040,11 @@ class CarPlayController(
             bonjourClient.start()
             startedBonjour = bonjourClient
             diagnostics.start()
-            debugLog("wireless Bonjour services started mode=interface iface=${hotspotInfo.interfaceName ?: "unknown"}")
+            debugLog(
+                "wireless Bonjour services started mode=" +
+                    "${if (bonjourClient.interfaceMdnsActive) "interface" else "system-nsd"} " +
+                    "iface=${hotspotInfo.interfaceName ?: "unknown"}",
+            )
             if (isStaleWirelessRun(generation)) {
                 closeWirelessStack()
                 return
