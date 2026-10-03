@@ -35,6 +35,10 @@ internal object BydHudBridge {
     private var context: Context? = null
     private var binder: IBinder? = null
     private var binding = false
+    // Checked once on first bind: on non-BYD hardware the gateway package is absent, so
+    // retrying bindService every 300 ms only spams logcat.
+    private var gatewayChecked = false
+    private var gatewayPresent = true
     private var started = false
     private var senderStarted = false
     private var guidanceSentLogged = false
@@ -162,6 +166,14 @@ internal object BydHudBridge {
     private fun bindLocked() {
         val appContext = context ?: return
         if (binder != null || binding) return
+        if (!gatewayChecked) {
+            gatewayChecked = true
+            gatewayPresent = gatewayInstalled(appContext)
+            if (!gatewayPresent) {
+                Log.i(TAG, "SOME/IP package absent; BYD HUD bridge disabled")
+            }
+        }
+        if (!gatewayPresent) return
         try {
             // The gateway's onUnbind requires a MIME type; a typeless bind crashes the whole SOME/IP process.
             val intent = Intent(SOMEIP_ACTION).apply {
@@ -175,6 +187,13 @@ internal object BydHudBridge {
             Log.w(TAG, "cannot bind SOME/IP service", error)
         }
     }
+
+    /** The manifest already declares SOMEIP_PACKAGE visible via <queries>. */
+    @Suppress("DEPRECATION")
+    private fun gatewayInstalled(context: Context): Boolean = runCatching {
+        context.packageManager.getPackageInfo(SOMEIP_PACKAGE, 0)
+        true
+    }.getOrDefault(false)
 
     private fun onGatewayCallback(action: () -> Unit) {
         callbacks.execute {
