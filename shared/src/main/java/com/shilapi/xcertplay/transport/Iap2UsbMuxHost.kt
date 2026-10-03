@@ -84,16 +84,29 @@ class Iap2UsbMuxHost private constructor(
         payload: ByteArray,
     ) {
         if (payload.size > 512) Log.i("xcertplay-usb", "usbmux TX source=$sourcePort destination=$destinationPort bytes=${payload.size} seq=$sequence ack=$acknowledgement")
-        val tcp = ByteArray(TCP_HEADER_BYTES + payload.size)
-        putU16(tcp, 0, sourcePort)
-        putU16(tcp, 2, destinationPort)
-        putU32(tcp, 4, sequence)
-        putU32(tcp, 8, acknowledgement)
-        tcp[12] = (TCP_HEADER_BYTES / 4 shl 4).toByte()
-        tcp[13] = flags.toByte()
-        putU16(tcp, 14, TCP_WINDOW_FIELD)
-        payload.copyInto(tcp, TCP_HEADER_BYTES)
-        sendFrame(PROTOCOL_TCP, tcp)
+        synchronized(writeLock) {
+            // One buffer per packet: mux header + TCP header + payload in a single frame
+            // instead of a TCP buffer copied into a MUX buffer.
+            val sequenceAndAcknowledgement = synchronized(stateLock) {
+                checkOpenLocked()
+                nextMuxSequence to nextMuxAcknowledgement
+            }
+            val frame = ByteArray(MUX_HEADER_BYTES + TCP_HEADER_BYTES + payload.size)
+            putU32(frame, 0, PROTOCOL_TCP)
+            putU32(frame, 4, frame.size)
+            putU32(frame, 8, MUX_MAGIC)
+            putU16(frame, 12, sequenceAndAcknowledgement.first)
+            putU16(frame, 14, sequenceAndAcknowledgement.second)
+            putU16(frame, MUX_HEADER_BYTES + 0, sourcePort)
+            putU16(frame, MUX_HEADER_BYTES + 2, destinationPort)
+            putU32(frame, MUX_HEADER_BYTES + 4, sequence)
+            putU32(frame, MUX_HEADER_BYTES + 8, acknowledgement)
+            frame[MUX_HEADER_BYTES + 12] = (TCP_HEADER_BYTES / 4 shl 4).toByte()
+            frame[MUX_HEADER_BYTES + 13] = flags.toByte()
+            putU16(frame, MUX_HEADER_BYTES + 14, TCP_WINDOW_FIELD)
+            payload.copyInto(frame, MUX_HEADER_BYTES + TCP_HEADER_BYTES)
+            writeFrameLocked(frame)
+        }
     }
 
     internal fun removeConnection(connection: Iap2UsbMuxTcpConnection) {
@@ -191,6 +204,10 @@ class Iap2UsbMuxHost private constructor(
         putU16(frame, 12, sequenceAndAcknowledgement.first)
         putU16(frame, 14, sequenceAndAcknowledgement.second)
         payload.copyInto(frame, MUX_HEADER_BYTES)
+        writeFrameLocked(frame)
+    }
+
+    private fun writeFrameLocked(frame: ByteArray) {
         try {
             pipe.write(frame, WRITE_TIMEOUT_MILLIS)
         } catch (error: IphoneUsbException) {

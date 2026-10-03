@@ -883,7 +883,9 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun buildContentView(): View {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val video = TextureView(this).apply {
-            isOpaque = false
+            // The window is black anyway; marking the texture opaque lets the compositor
+            // skip blending the video layer on weak head units.
+            isOpaque = true
             surfaceTextureListener = textureListener
         }
         val gestureLayer = View(this).apply {

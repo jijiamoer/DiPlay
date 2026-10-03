@@ -337,6 +337,9 @@ class Iap2UsbSession internal constructor(
     private var closed = false
     private var failure: IphoneUsbException? = null
     private var pendingRead: UsbRequest? = null
+    // Reads are serialized by readLock, so one direct buffer can be reused instead of
+    // allocating a fresh 64 KiB direct ByteBuffer for every USB read on weak units.
+    private var readBuffer: ByteBuffer? = null
 
     fun write(data: ByteArray, timeoutMillis: Int) = synchronized(writeLock) {
         checkOpen()
@@ -367,7 +370,8 @@ class Iap2UsbSession internal constructor(
                 checkOpenLocked()
                 pendingRead = request
             }
-            val buffer = ByteBuffer.allocateDirect(USBMUX_READ_CHUNK_BYTES)
+            val buffer = (readBuffer ?: ByteBuffer.allocateDirect(USBMUX_READ_CHUNK_BYTES)
+                .also { readBuffer = it }).apply { clear() }
             if (!request.queue(buffer)) {
                 throw IphoneUsbException.DeviceUnavailable(
                     "Android could not queue USBMUX read request (${requestDiagnostics(timeoutMillis, buffer.capacity())})",
