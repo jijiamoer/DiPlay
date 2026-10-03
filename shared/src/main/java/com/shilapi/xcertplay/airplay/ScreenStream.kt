@@ -59,6 +59,7 @@ class ScreenStream(private val key: ByteArray, private val onDiagnostic: (String
     }
 
     private fun accept(bound: ServerSocket) {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
         try {
             val accepted = bound.accept()
             socket = accepted

@@ -84,6 +84,7 @@ class AudioStream(
     }
 
     private fun runData(socket: DatagramSocket, listener: Listener) {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
         val stats = StreamReceiveStats("audio type=$streamType", onDiagnostic)
         val buffer = ByteArray(DATAGRAM_BYTES)
         // Reused per-packet scratch: the decrypt writes straight into the finished RTP

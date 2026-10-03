@@ -12,6 +12,7 @@ import android.media.MediaFormat
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.util.Log
 import android.view.Surface
 import com.shilapi.xcertplay.airplay.AudioCodecKind
@@ -465,6 +466,8 @@ private class VideoDecoder(
     }
 
     private fun run() {
+        // Weak head units starve the decoder under default priority and drop video.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
         try {
             while (running) {
                 val job = queue.poll(5)
@@ -874,6 +877,8 @@ private class AudioRenderer(
     }
 
     private fun run() {
+        // Audio underruns on weak head units present as crackling; keep writes fed.
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         try {
             when (format.codec) {
                 AudioCodecKind.AAC_LC -> configureCodec(MediaFormat.MIMETYPE_AUDIO_AAC)

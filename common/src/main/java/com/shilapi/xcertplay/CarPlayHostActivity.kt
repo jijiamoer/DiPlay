@@ -29,6 +29,8 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.TextureView
 import android.view.KeyEvent
 import android.view.View
@@ -243,7 +245,8 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
 
-    private var videoView: TextureView? = null
+    private var videoView: View? = null
+    private var videoIsSurfaceView = false
     private var gestureOverlay: View? = null
     private var settingsMenu: View? = null
     private var mfiTargetGroup: RadioGroup? = null
@@ -416,6 +419,32 @@ class CarPlayHostActivity : ComponentActivity() {
         }
 
         override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+    }
+
+    /**
+     * Hardware-overlay path: the decoder writes straight into a SurfaceFlinger layer, so a
+     * weak GPU skips the per-frame texture composite TextureView needs. The buffer is
+     * letterboxed by resizing the view itself (see [updateVideoLayout]).
+     */
+    private val surfaceListener = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            attachSurface(holder.surface)
+            val view = videoView ?: return
+            updateVideoLayout(view.width, view.height)
+            scheduleDisplaySize(view.width, view.height)
+            appendLog("Video surface created (hardware overlay)")
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            updateVideoLayout(width, height)
+            scheduleDisplaySize(width, height)
+        }
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            sink?.clearSurface(SCREEN_TYPE_MAIN, holder.surface)
+            sink?.clearSurface(SCREEN_TYPE_ALT, holder.surface)
+            appendLog("Video surface destroyed")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -885,11 +914,18 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private fun buildContentView(): View {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        val video = TextureView(this).apply {
-            // The window is black anyway; marking the texture opaque lets the compositor
-            // skip blending the video layer on weak head units.
-            isOpaque = true
-            surfaceTextureListener = textureListener
+        videoIsSurfaceView = AirPlayPersistence.loadHardwareOverlayVideo(this)
+        val video: View = if (videoIsSurfaceView) {
+            SurfaceView(this).apply {
+                holder.addCallback(surfaceListener)
+            }
+        } else {
+            TextureView(this).apply {
+                // The window is black anyway; marking the texture opaque lets the compositor
+                // skip blending the video layer on weak head units.
+                isOpaque = true
+                surfaceTextureListener = textureListener
+            }
         }
         val gestureLayer = View(this).apply {
             isClickable = true
@@ -3418,10 +3454,23 @@ class CarPlayHostActivity : ComponentActivity() {
         val view = videoView ?: return
         if (viewWidth <= 0 || viewHeight <= 0) return
         val content = contentRect(viewWidth, viewHeight)
-        view.setTransform(Matrix().apply {
-            setScale(content.width / viewWidth, content.height / viewHeight)
-            postTranslate(content.left, content.top)
-        })
+        if (view is SurfaceView) {
+            // No transform API on a hardware overlay; letterbox by moving the hole the
+            // view punches in the window and letting SurfaceFlinger scale the buffer.
+            view.layoutParams = FrameLayout.LayoutParams(
+                content.width.toInt().coerceAtLeast(1),
+                content.height.toInt().coerceAtLeast(1),
+            ).apply {
+                leftMargin = content.left.toInt()
+                topMargin = content.top.toInt()
+            }
+            view.requestLayout()
+        } else if (view is TextureView) {
+            view.setTransform(Matrix().apply {
+                setScale(content.width / viewWidth, content.height / viewHeight)
+                postTranslate(content.left, content.top)
+            })
+        }
     }
 
     private fun recordDetectedMaximum(size: DisplaySize) {
