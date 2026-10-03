@@ -2,7 +2,7 @@ package com.shilapi.xcertplay.network
 
 import android.content.Context
 import android.net.ConnectivityManager
-import android.net.MacAddress
+import android.annotation.SuppressLint
 import android.net.wifi.SoftApConfiguration
 import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit
  * the AP interface is usable. The reservation and multicast lock stay owned by this instance
  * until [close].
  */
+@RequiresApi(Build.VERSION_CODES.O)
 class LocalOnlyHotspotManager(context: Context, private val onDiagnostic: (String) -> Unit = {}) : WirelessHotspotManager {
     private val connectivityManager =
         context.applicationContext.getSystemService(ConnectivityManager::class.java)
@@ -176,6 +177,9 @@ class LocalOnlyHotspotManager(context: Context, private val onDiagnostic: (Strin
      * for, or null when the platform got the plain Android-generated AP. The caller uses
      * the returned channel as the advertised fallback when no live radio reading exists.
      */
+    // Nearby-Wi-Fi permission is verified by the wireless flow before start(); the SDK_INT
+    // gate above bounds the reflective SoftApConfiguration path to releases that have it.
+    @SuppressLint("MissingPermission", "NewApi")
     private fun requestHotspot(callback: WifiManager.LocalOnlyHotspotCallback): Int? {
         // Android 13's service accepts a custom LOHS configuration from target-33+ callers
         // with Nearby devices permission. BYD's Android 12 builds expose the same entry
@@ -444,13 +448,8 @@ class LocalOnlyHotspotManager(context: Context, private val onDiagnostic: (Strin
         val ssid = validateSsid(configuration.SSID)
         val security = mapWifiConfigurationSecurity(configuration)
         val passphrase = validatePassphrase(security, unquote(configuration.preSharedKey))
-        val bssid = configuration.BSSID?.let {
-            try {
-                MacAddress.fromString(it)
-            } catch (failure: IllegalArgumentException) {
-                throw IOException("LocalOnlyHotspot reported an invalid BSSID: $it", failure)
-            }
-        }
+        val bssidBytes = configuration.BSSID?.let(::parseMacAddressBytes)
+        val bssid = configuration.BSSID
         val channel = readWifiConfigurationChannel(configuration)
 
         return HotspotConfiguration(
@@ -458,8 +457,8 @@ class LocalOnlyHotspotManager(context: Context, private val onDiagnostic: (Strin
             passphrase = passphrase,
             security = security,
             channel = channel,
-            bssid = bssid?.toString(),
-            bssidBytes = bssid?.toByteArray(),
+            bssid = bssid,
+            bssidBytes = bssidBytes,
             bandLabel = readWifiConfigurationBandLabel(configuration, channel),
         )
     }
@@ -754,6 +753,16 @@ class LocalOnlyHotspotManager(context: Context, private val onDiagnostic: (Strin
 
     private fun ByteArray.toMacAddressString(): String =
         joinToString(":") { "%02x".format(it.toInt() and 0xff) }
+
+    /** MacAddress.toByteArray is API 28+; the legacy WifiConfiguration BSSID string parses directly. */
+    private fun parseMacAddressBytes(value: String): ByteArray {
+        val parts = value.split(":")
+        require(parts.size == 6) { "LocalOnlyHotspot reported an invalid BSSID: $value" }
+        return ByteArray(6) { index ->
+            parts[index].toIntOrNull(16)?.toByte()
+                ?: throw IOException("LocalOnlyHotspot reported an invalid BSSID: $value")
+        }
+    }
 
     private fun Inet6Address.toEui64MacAddress(): String? {
         val bytes = address

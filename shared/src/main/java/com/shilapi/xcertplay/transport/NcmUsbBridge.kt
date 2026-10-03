@@ -5,6 +5,7 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbRequest
+import android.os.Build
 import android.util.Log
 import java.io.Closeable
 import java.nio.ByteBuffer
@@ -219,6 +220,19 @@ class NcmUsbBridge internal constructor(
 
     private fun readChunk(timeoutMillis: Long): Int? {
         checkOpen()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            // UsbRequest.queue/requestWait are API 26+; a blocking bulkTransfer into
+            // readBuffer is the synchronous equivalent and unblocks on close().
+            val received = try {
+                connection.bulkTransfer(
+                    inEndpoint, readBuffer, readBuffer.size,
+                    timeoutMillis.coerceIn(1, Int.MAX_VALUE - 1L).toInt(),
+                )
+            } catch (error: RuntimeException) {
+                throw failSession("NCM read failed", error)
+            }
+            return if (received > 0) received else null
+        }
         val request = try {
             // Publish and queue atomically with close(), so detach cannot miss a new request.
             synchronized(stateLock) {

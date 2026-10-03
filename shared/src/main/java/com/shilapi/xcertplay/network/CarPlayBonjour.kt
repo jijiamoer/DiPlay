@@ -140,7 +140,7 @@ class CarPlayBonjour(
     private val services = LinkedBlockingQueue<NsdServiceInfo>()
     private val interfaceServices = LinkedBlockingQueue<Pair<CarPlayBonjourEndpoint, InetAddress>>()
     private val discoveryEvents = LinkedBlockingQueue<CarPlayBonjourEvent.Discovery>(32)
-    private val seenServices = ConcurrentHashMap.newKeySet<String>()
+    private val seenServices = ConcurrentHashMap<String, Boolean>()
     private val lifecycleLock = Any()
     private val localAdvertisedAddress = advertisedHostAddress()
     private val addedCount = AtomicInteger()
@@ -197,7 +197,7 @@ class CarPlayBonjour(
                 ))
                 return
             }
-            if (!seenServices.add(event.name)) return
+            if (seenServices.putIfAbsent(event.name, true) != null) return
             val endpoint = CarPlayBonjourEndpoint(
                 event.name, address.hostAddress ?: return, info.port,
                 info.getPropertyString("id"),
@@ -238,7 +238,7 @@ class CarPlayBonjour(
             val name = serviceInfo.serviceName ?: return
             val type = serviceInfo.serviceType ?: CARPLAY_CONTROL_SERVICE_TYPE
             val key = "$type|$name"
-            if (!seenServices.add(key)) return
+            if (seenServices.putIfAbsent(key, true) != null) return
             services.offer(serviceInfo)
         }
 

@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.shilapi.xcertplay"
-        minSdk = 27
+        minSdk = 23
         targetSdk = 37
         versionCode = 1201
         versionName = "1.2.1"

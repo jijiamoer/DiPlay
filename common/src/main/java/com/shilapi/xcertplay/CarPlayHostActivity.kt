@@ -1,6 +1,7 @@
 package com.shilapi.xcertplay
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -769,6 +770,8 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     // The steering-wheel voice key reaches the focused window; while CarPlay is on screen it opens Siri.
+    // dispatchKeyEvent is restricted to androidx but it is the only window-level key hook an activity has.
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (!CarPlayMediaButton.opensSiri(event.keyCode)) return super.dispatchKeyEvent(event)
         if (event.action == KeyEvent.ACTION_UP) {
@@ -3308,7 +3311,9 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
         try {
-            startForegroundService(Intent(this, DiPlaySessionService::class.java))
+            val serviceIntent = Intent(this, DiPlaySessionService::class.java)
+            // startForegroundService only exists on O+; below it a plain startService is unrestricted.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent) else startService(serviceIntent)
             next.start()
         } catch (error: RuntimeException) {
             appendLog("Connection could not start: ${error.javaClass.simpleName}")

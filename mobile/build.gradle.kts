@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "com.shihab.diplay"
-        minSdk = 27
+        minSdk = 23
         targetSdk = 37
         versionCode = 29
         versionName = "0.2.10"
