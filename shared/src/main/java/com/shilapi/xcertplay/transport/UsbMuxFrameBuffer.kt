@@ -18,7 +18,7 @@ internal class UsbMuxFrameBuffer(private val diagnostic: (String) -> Unit = {}) 
 
     fun append(transfer: ByteArray) {
         lastUsbReadBytes = transfer.size
-        bytes += transfer
+        bytes = if (bytes.isEmpty()) transfer else bytes + transfer
     }
 
     fun takeFrame(): UsbMuxFrame? {

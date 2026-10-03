@@ -1,3 +1,9 @@
+# Unreleased
+
+- Support Android 8.1 (API 27) head units: minSdk lowered from 28 to 27 across all modules and the NDK target. Wireless Wi-Fi Direct still requires Android 10; map-embedding and cluster features keep their existing higher gates.
+- Reduce allocation churn on media and USB hot paths for older, slower head units: pooled receive buffers and in-place decryption for screen and audio streams, direct write into codec input buffers, incremental decode-queue counters replacing per-frame list scans, a single buffer per outbound USBMUX TCP frame, and a reused direct buffer for USB reads.
+- Render the CarPlay video surface as opaque to skip per-frame alpha blending.
+
 # DiPlay 0.2.10 — 2026-10-03
 
 - Publish CarPlay song metadata, position and artwork to Android media sessions; bound artwork queues and reject stale work across sessions (#82).

@@ -169,9 +169,13 @@ class IapTunnel(
             val frameLength = FRAME_HEADER_LEN + length + TAG_SIZE
             if (buffer.size - offset < frameLength) break
             val aad = buffer.copyOfRange(offset, offset + FRAME_HEADER_LEN)
-            val sealed = buffer.copyOfRange(offset + FRAME_HEADER_LEN, offset + frameLength)
             val plain = AirPlayCrypto.chachaOpen(
-                readKey, AirPlayCrypto.nonce64(readCounter.get()), sealed, aad,
+                readKey,
+                AirPlayCrypto.nonce64(readCounter.get()),
+                buffer,
+                offset + FRAME_HEADER_LEN,
+                length + TAG_SIZE,
+                aad,
             )
             readCounter.incrementAndGet()
             output.add(plain)

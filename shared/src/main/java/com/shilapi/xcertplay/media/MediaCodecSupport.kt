@@ -117,18 +117,26 @@ object MediaCodecSupport {
 
     /** Wraps one raw AAC-LC access unit in an MPEG-4 ADTS frame. */
     fun adtsFrame(accessUnit: ByteArray, sampleRate: Int, channels: Int): ByteArray {
+        val header = ByteArray(7)
+        writeAdtsHeader(header, accessUnit.size + header.size, sampleRate, channels)
+        return header + accessUnit
+    }
+
+    /**
+     * Writes the seven-byte ADTS header for a frame of [frameLength] bytes (header +
+     * access unit) into [out]. Hot audio paths fill a reused header and put it into the
+     * codec input buffer separately instead of concatenating a frame per packet.
+     */
+    fun writeAdtsHeader(out: ByteArray, frameLength: Int, sampleRate: Int, channels: Int) {
         val frequencyIndex = aacFrequencyIndex(sampleRate)
         val channelConfig = channels.coerceIn(1, 7)
-        val frameLength = accessUnit.size + 7
-        val header = ByteArray(7)
-        header[0] = 0xff.toByte()
-        header[1] = 0xf1.toByte()
-        header[2] = ((1 shl 6) or (frequencyIndex shl 2) or (channelConfig ushr 2)).toByte()
-        header[3] = (((channelConfig and 0x3) shl 6) or (frameLength ushr 11)).toByte()
-        header[4] = ((frameLength ushr 3) and 0xff).toByte()
-        header[5] = (((frameLength and 0x7) shl 5) or 0x1f).toByte()
-        header[6] = 0xfc.toByte()
-        return header + accessUnit
+        out[0] = 0xff.toByte()
+        out[1] = 0xf1.toByte()
+        out[2] = ((1 shl 6) or (frequencyIndex shl 2) or (channelConfig ushr 2)).toByte()
+        out[3] = (((channelConfig and 0x3) shl 6) or (frameLength ushr 11)).toByte()
+        out[4] = ((frameLength ushr 3) and 0xff).toByte()
+        out[5] = (((frameLength and 0x7) shl 5) or 0x1f).toByte()
+        out[6] = 0xfc.toByte()
     }
 
     /** Extracts one RFC 3640 AAC access unit from an RTP payload. */

@@ -1,5 +1,6 @@
 package com.shilapi.xcertplay.hud
 
+import androidx.annotation.RequiresApi
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
@@ -85,6 +86,16 @@ class StandaloneHudDemoActivity : Activity() {
         check(Build.FINGERPRINT == "BYD-AUTO/IVI/IVI:13/TP1A.220624.014/eng.build20260722.221155:user/release-keys") {
             "This test is restricted to the inspected firmware"
         }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            throw IllegalStateException("This test needs the inspected Android 9+ receiver APIs")
+        }
+        validateReceiverSigning()
+        val receiver = packageManager.getReceiverInfo(target, 0)
+        check(receiver.enabled && receiver.exported && receiver.permission.isNullOrEmpty())
+    }
+
+    @RequiresApi(Build.VERSION_CODES.P)
+    private fun validateReceiverSigning() {
         val info = packageManager.getPackageInfo(target.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
         check(info.longVersionCode == 10601004L) { "Different stock receiver version" }
         check(info.applicationInfo!!.flags and ApplicationInfo.FLAG_SYSTEM != 0)
@@ -92,8 +103,6 @@ class StandaloneHudDemoActivity : Activity() {
         check(certs.size == 1 && MessageDigest.getInstance("SHA-256").digest(certs[0].toByteArray())
             .joinToString("") { "%02x".format(it.toInt() and 255) } ==
             "efe3ca8ada0d10c655c3df9910ad2ebc121a47d9a6358434eb24074309933efc")
-        val receiver = packageManager.getReceiverInfo(target, 0)
-        check(receiver.enabled && receiver.exported && receiver.permission.isNullOrEmpty())
     }
 
     private fun startDemo() {

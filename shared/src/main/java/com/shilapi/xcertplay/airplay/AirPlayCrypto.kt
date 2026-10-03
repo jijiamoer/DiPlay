@@ -79,7 +79,7 @@ object AirPlayCrypto {
         plaintext: ByteArray,
         aad: ByteArray = ByteArray(0),
     ): ByteArray {
-        val cipher = ChaCha20Poly1305()
+        val cipher = sealCipher()
         cipher.init(true, AEADParameters(KeyParameter(key), MAC_BITS, nonce, aad))
         val output = ByteArray(cipher.getOutputSize(plaintext.size))
         val length = cipher.processBytes(plaintext, 0, plaintext.size, output, 0)
@@ -92,25 +92,74 @@ object AirPlayCrypto {
         nonce: ByteArray,
         ciphertextAndTag: ByteArray,
         aad: ByteArray = ByteArray(0),
+    ): ByteArray =
+        chachaOpen(key, nonce, ciphertextAndTag, 0, ciphertextAndTag.size, aad)
+
+    /** Decrypts [length] bytes of ciphertext+tag starting at [offset] in [data]. */
+    fun chachaOpen(
+        key: ByteArray,
+        nonce: ByteArray,
+        data: ByteArray,
+        offset: Int,
+        length: Int,
+        aad: ByteArray = ByteArray(0),
     ): ByteArray {
-        val cipher = ChaCha20Poly1305()
+        val cipher = openCipher()
         cipher.init(false, AEADParameters(KeyParameter(key), MAC_BITS, nonce, aad))
-        val output = ByteArray(cipher.getOutputSize(ciphertextAndTag.size))
-        val processed = cipher.processBytes(ciphertextAndTag, 0, ciphertextAndTag.size, output, 0)
+        val output = ByteArray(cipher.getOutputSize(length))
+        val processed = cipher.processBytes(data, offset, length, output, 0)
         val finalized = cipher.doFinal(output, processed)
         val outputLength = processed + finalized
         return if (outputLength == output.size) output else output.copyOf(outputLength)
     }
 
+    /**
+     * Decrypts [length] bytes of ciphertext+tag at [offset] in [data] into [out] at
+     * [outOffset], returning the plaintext length. Hot receive paths use this to write
+     * directly into a pre-sized packet buffer instead of copying sealed bytes first.
+     */
+    fun chachaOpenInto(
+        key: ByteArray,
+        nonce: ByteArray,
+        data: ByteArray,
+        offset: Int,
+        length: Int,
+        aad: ByteArray,
+        out: ByteArray,
+        outOffset: Int,
+    ): Int {
+        val cipher = openCipher()
+        cipher.init(false, AEADParameters(KeyParameter(key), MAC_BITS, nonce, aad))
+        val processed = cipher.processBytes(data, offset, length, out, outOffset)
+        return processed + cipher.doFinal(out, outOffset + processed)
+    }
+
+    // Media streams seal/open every packet; reusing the engine on its own thread avoids
+    // rebuilding the ChaCha/Poly1305 state per packet on weak head units.
+    private fun sealCipher(): ChaCha20Poly1305 =
+        SEAL_CIPHERS.get() ?: ChaCha20Poly1305().also { SEAL_CIPHERS.set(it) }
+
+    private fun openCipher(): ChaCha20Poly1305 =
+        OPEN_CIPHERS.get() ?: ChaCha20Poly1305().also { OPEN_CIPHERS.set(it) }
+
+    private val SEAL_CIPHERS = ThreadLocal<ChaCha20Poly1305>()
+    private val OPEN_CIPHERS = ThreadLocal<ChaCha20Poly1305>()
+
     /** 12-byte nonce: four zero bytes followed by an eight-byte little-endian counter. */
     fun nonce64(counter: Long): ByteArray {
         val nonce = ByteArray(NONCE_SIZE)
+        nonce64(counter, nonce)
+        return nonce
+    }
+
+    /** Writes the counter nonce into [nonce], which must hold at least [NONCE_SIZE] bytes. */
+    fun nonce64(counter: Long, nonce: ByteArray) {
         var value = counter
+        nonce.fill(0, 0, 4)
         for (index in 4 until NONCE_SIZE) {
             nonce[index] = value.toByte()
             value = value ushr 8
         }
-        return nonce
     }
 
     /** 12-byte nonce from an eight-byte ASCII label placed after four zero bytes. */
